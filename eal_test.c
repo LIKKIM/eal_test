@@ -16,22 +16,24 @@
 
 /* === 结构体定义 === */
 struct th89d_version_args {
-	unsigned int p2;
-	unsigned char *out;
-	unsigned int len;
+	uint8_t  p2;         // 对应 __u8
+	uint8_t *out;        // 用户空间缓冲区
+	uint32_t len;        // 缓冲区长度
+	uint16_t sw;         // 状态字
 };
 
 struct th89d_rng_args {
-	unsigned int le;     // 随机数长度
-	unsigned int len;    // 实际接收缓冲区长度
-	unsigned char *out;  // 输出缓冲区
+	uint32_t le;         // 请求长度
+	uint32_t len;        // 实际长度
+	uint8_t *out;        // 输出缓冲区
+	uint16_t sw;         // 状态字
 };
 
 struct th89d_nvm_erase_args {
-	unsigned int addr;   // 擦除起始地址
-	unsigned int pages;  // 擦除页数
-	unsigned int sw;
-	unsigned int len;
+	uint32_t addr;       // 起始地址
+	uint8_t  pages;      // 页数
+	uint16_t sw;         // 状态字
+	uint32_t len;        // 返回长度
 };
 
 /* === 版本子命令（P2）定义 === */
@@ -86,8 +88,9 @@ static void test_get_version(int fd)
 			continue;
 		}
 
-		printf("[%s] Version (P2=%02X): %s\n",
-		       th89d_ver_name[p2], p2, buf);
+		printf("[%s] Version (P2=%02X): %s\n", th89d_ver_name[p2], p2, buf);
+		printf("  SW = 0x%04X (SW1=0x%02X, SW2=0x%02X)\n",
+		       ver.sw, ver.sw >> 8, ver.sw & 0xFF);
 	}
 }
 
@@ -109,7 +112,9 @@ static void test_rng(int fd)
 		return;
 	}
 
-	dump_hex("Random Data", randbuf, rng.le);
+	dump_hex("Random Data", randbuf, rng.len);
+	printf("RNG SW = 0x%04X (SW1=0x%02X, SW2=0x%02X)\n",
+	       rng.sw, rng.sw >> 8, rng.sw & 0xFF);
 }
 
 /* === 测试函数：NVM 擦除 === */
@@ -130,6 +135,8 @@ static void test_nvm_erase(int fd)
 
 	printf("NVM erase success (addr=0x%08X, pages=%u)\n",
 	       erase.addr, erase.pages);
+	printf("  SW = 0x%04X (SW1=0x%02X, SW2=0x%02X)\n",
+	       erase.sw, erase.sw >> 8, erase.sw & 0xFF);
 }
 
 /* === 主函数 === */
