@@ -6,6 +6,7 @@
 #include <string.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 /* === IOCTL 定义 === */
 #define TH89D_IOCTL_MAGIC        'T'
@@ -29,6 +30,8 @@ struct th89d_rng_args {
 struct th89d_nvm_erase_args {
 	unsigned int addr;   // 擦除起始地址
 	unsigned int pages;  // 擦除页数
+	unsigned int sw;
+	unsigned int len;
 };
 
 /* === 版本子命令（P2）定义 === */
@@ -54,24 +57,18 @@ static void dump_hex(const char *title, const unsigned char *data, int len)
 	printf("%s (%d bytes):\n", title, len);
 	for (int i = 0; i < len; i++) {
 		printf("%02X ", data[i]);
-		if ((i + 1) % 16 == 0) printf("\n");
+		if ((i + 1) % 16 == 0)
+			printf("\n");
 	}
-	if (len % 16) printf("\n");
+	if (len % 16)
+		printf("\n");
 }
 
-/* === 主函数 === */
-int main(void)
+/* === 测试函数：GET_VERSION === */
+static void test_get_version(int fd)
 {
-	int fd = open("/dev/thd89", O_RDWR);
-	if (fd < 0) {
-		perror("open");
-		return 1;
-	}
-
-	printf("=== TH89D TEST START ===\n");
-
-	/* --------------------- 测试 1：GET_VERSION --------------------- */
 	printf("\n[TEST 1] GET_VERSION\n");
+
 	char buf[64];
 	struct th89d_version_args ver;
 
@@ -88,12 +85,17 @@ int main(void)
 				th89d_ver_name[p2], strerror(errno));
 			continue;
 		}
+
 		printf("[%s] Version (P2=%02X): %s\n",
 		       th89d_ver_name[p2], p2, buf);
 	}
+}
 
-	/* --------------------- 测试 2：RNG 随机数 --------------------- */
+/* === 测试函数：RNG 随机数 === */
+static void test_rng(int fd)
+{
 	printf("\n[TEST 2] RNG\n");
+
 	unsigned char randbuf[32];
 	struct th89d_rng_args rng;
 
@@ -104,24 +106,46 @@ int main(void)
 
 	if (ioctl(fd, TH89D_IOCTL_RNG, &rng) < 0) {
 		perror("ioctl RNG");
-	} else {
-		dump_hex("Random Data", randbuf, rng.le);
+		return;
 	}
 
-	/* --------------------- 测试 3：NVM 擦除 --------------------- */
-	printf("\n[TEST 3] NVM ERASE\n");
-	struct th89d_nvm_erase_args erase;
+	dump_hex("Random Data", randbuf, rng.le);
+}
 
+/* === 测试函数：NVM 擦除 === */
+static void test_nvm_erase(int fd)
+{
+	printf("\n[TEST 3] NVM ERASE\n");
+
+	struct th89d_nvm_erase_args erase;
 	memset(&erase, 0, sizeof(erase));
+
 	erase.addr  = 0x00000000;  // 起始地址
 	erase.pages = 1;           // 擦除 1 页
 
 	if (ioctl(fd, TH89D_IOCTL_NVM_ERASE, &erase) < 0) {
 		perror("ioctl NVM_ERASE");
-	} else {
-		printf("NVM erase success (addr=0x%08X, pages=%u)\n",
-		       erase.addr, erase.pages);
+		return;
 	}
+
+	printf("NVM erase success (addr=0x%08X, pages=%u)\n",
+	       erase.addr, erase.pages);
+}
+
+/* === 主函数 === */
+int main(void)
+{
+	int fd = open("/dev/thd89", O_RDWR);
+	if (fd < 0) {
+		perror("open");
+		return 1;
+	}
+
+	printf("=== TH89D TEST START ===\n");
+
+	test_get_version(fd);
+	test_rng(fd);
+	// test_nvm_erase(fd);
 
 	close(fd);
 	printf("\n=== TH89D TEST DONE ===\n");
