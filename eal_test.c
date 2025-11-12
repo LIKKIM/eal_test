@@ -38,13 +38,14 @@ struct th89d_nvm_erase_args {
 };
 
 struct th89d_read_args {
-	uint8_t p1;       // 区域类型：00 RAM, 01 NVM, 02 SFR
-	uint8_t p2;       // 读取模式：00 byte, 01 half-word, 02 word
-	uint32_t addr;    // 起始地址
-	uint32_t read_len;      // 读取长度
+	uint8_t p1;		// READ 模式：00普通、01加严、02容错、03探状态
+	uint8_t p2;		// 读取模式：00 byte, 01 half-word, 02 word
+	uint8_t  mode;		// 加严读模式：仅当 P1=01 时有效 (0=加严0, 1=加严1)
+	uint32_t addr;		// 起始地址
+	uint32_t read_len;	// 读取长度
 	uint32_t data_len;
-	uint8_t *out;     // 用户缓冲区
-	uint16_t sw;      // 状态字
+	uint8_t *out;		// 用户缓冲区
+	uint16_t sw;		// 状态字
 };
 
 /* === 版本子命令（P2）定义 === */
@@ -87,6 +88,39 @@ const char *th89d_sw_str(uint16_t sw) {
 		default:                    return "\033[90mUnknown Status\033[0m"; // 灰色
 	}
 }
+
+/* === READ 模式 (P1) === */
+#define TH89D_READ_P1_NORMAL    0x00  // 普通读 / 读 RAM
+#define TH89D_READ_P1_STRICT    0x01  // 加严读
+#define TH89D_READ_P1_TOLERANT  0x02  // 容错读
+#define TH89D_READ_P1_STATUS    0x03  // 探状态校验
+
+/* === 读取方式 (P2) === */
+#define TH89D_READ_P2_BYTE      0x00  // 字节方式
+#define TH89D_READ_P2_HALFWORD  0x01  // 半字方式
+#define TH89D_READ_P2_WORD      0x02  // 字方式
+
+/* === 加严模式定义 === */
+#define TH89D_STRICT_MODE_0	0x00  // 加严读0
+#define TH89D_STRICT_MODE_1	0x01  // 加严读1
+
+static const char *const p1_mode_name[] = {
+    [TH89D_READ_P1_NORMAL]   = "NORMAL",
+    [TH89D_READ_P1_STRICT]   = "STRICT",
+    [TH89D_READ_P1_TOLERANT] = "TOLERANT",
+    [TH89D_READ_P1_STATUS]   = "STATUS",
+};
+
+static const char *const p2_mode_name[] = {
+    [TH89D_READ_P2_BYTE]     = "BYTE",
+    [TH89D_READ_P2_HALFWORD] = "HALFWORD",
+    [TH89D_READ_P2_WORD]     = "WORD",
+};
+
+static const char *const strict_mode_name[] = {
+    [TH89D_STRICT_MODE_0] = "STRICT_MODE_0",
+    [TH89D_STRICT_MODE_1] = "STRICT_MODE_1",
+};
 
 /* === 工具函数 === */
 static void dump_hex(const char *title, const unsigned char *data, int len)
@@ -160,7 +194,7 @@ static void test_nvm_erase(int fd)
 	struct th89d_nvm_erase_args erase;
 	memset(&erase, 0, sizeof(erase));
 
-	erase.addr  = 0x00002800;  // 起始地址
+	erase.addr  = 0x0C000000;  // 起始地址
 	erase.pages = 1;           // 擦除 1 页
 
 	if (ioctl(fd, TH89D_IOCTL_NVM_ERASE, &erase) < 0) {
@@ -174,50 +208,53 @@ static void test_nvm_erase(int fd)
 	       erase.sw, erase.sw >> 8, erase.sw & 0xFF, th89d_sw_str(erase.sw));
 }
 
-static void test_nvm_read(int fd)
+static void test_nvm_read(int fd, uint8_t p1, uint8_t p2,
+                               uint8_t mode, uint32_t addr, uint32_t len)
 {
-	struct th89d_read_args rd;
+	struct th89d_read_args rd = {0};
 	unsigned char buf[512];
 
-	printf("\n[TEST 3] NVM READ\n");
+	rd.p1 = p1;      // 模式：00普通、01加严、02容错、03探状态
+	rd.p2 = p2;      // 方式：00字节、01半字、02字
+	rd.mode = mode;
+	rd.addr = addr;
+	rd.read_len = len;
+	rd.out = buf;
 
-	memset(&rd, 0, sizeof(rd));
-	rd.p1 = 0x00;  // 普通读 RAM
-	rd.p2 = 0x00;  // 字节方式
-	rd.addr = 0x0C000000;
-	rd.read_len  = 32;
-	rd.out  = buf;
+	printf("\n[TEST 3] NVM READ\n");
+	printf("  P1=%02X (%s)  P2=%02X (%s)  MODE=%02X (%s)\n",
+		p1,
+		(p1 <= TH89D_READ_P1_STATUS) ? p1_mode_name[p1] : "UNKNOWN",
+		p2,
+		(p2 <= TH89D_READ_P2_WORD) ? p2_mode_name[p2] : "UNKNOWN",
+		mode,
+		(mode <= TH89D_STRICT_MODE_1) ? strict_mode_name[mode] : "N/A");
 
 	if (ioctl(fd, TH89D_IOCTL_READ, &rd) < 0) {
 		perror("ioctl READ");
 		return;
 	}
 
-	printf("READ (addr=0x%08X, data_len=%d bytes, req=%d):\n",
-	       rd.addr, rd.data_len, rd.read_len);
+	printf("READ (addr=0x%08X, data_len=%u bytes, req=%u)\n",
+		rd.addr, rd.data_len, rd.read_len);
 
 	if (rd.data_len != rd.read_len) {
-	fprintf(stderr,
-		"Error: expected %u bytes, but device returned %u bytes\n",
-		rd.read_len, rd.data_len);
-	fprintf(stderr, "SW = 0x%04X (SW1=0x%02X, SW2=0x%02X) [%s]\n",
-		rd.sw, rd.sw >> 8, rd.sw & 0xFF, th89d_sw_str(rd.sw));
-	return;
+		fprintf(stderr, "Error: expected %u, got %u bytes\n",
+			rd.read_len, rd.data_len);
+		fprintf(stderr, "SW = 0x%04X [%s]\n",
+			rd.sw, th89d_sw_str(rd.sw));
+		return;
 	}
 
-	/* === 格式化打印，每行16字节 === */
 	for (int i = 0; i < rd.data_len; i++) {
-		if (i % 16 == 0)
-			printf("  %04X: ", i);
+		if (i % 16 == 0) printf("  %04X: ", i);
 		printf("%02X ", buf[i]);
-		if ((i + 1) % 16 == 0)
-			printf("\n");
+		if ((i + 1) % 16 == 0) printf("\n");
 	}
-	if (rd.data_len % 16)
-		printf("\n");
+	if (rd.data_len % 16) printf("\n");
 
-	printf("SW = 0x%04X (SW1=0x%02X, SW2=0x%02X)  [%s]\n",
-	       rd.sw, rd.sw >> 8, rd.sw & 0xFF, th89d_sw_str(rd.sw));
+	printf("SW = 0x%04X (SW1=%02X, SW2=%02X) [%s]\n",
+		rd.sw, rd.sw >> 8, rd.sw & 0xFF, th89d_sw_str(rd.sw));
 }
 
 /* === 主函数 === */
@@ -234,7 +271,15 @@ int main(void)
 	test_get_version(fd);
 	test_rng(fd);
 	// test_nvm_erase(fd);
-	test_nvm_read(fd);
+	// test_nvm_read(fd, TH89D_READ_P1_NORMAL, TH89D_READ_P2_BYTE, TH89D_STRICT_MODE_0, 0x0C000000, 32);
+	// test_nvm_read(fd, TH89D_READ_P1_NORMAL, TH89D_READ_P2_HALFWORD, TH89D_STRICT_MODE_0, 0x0C000000, 32);
+	// test_nvm_read(fd, TH89D_READ_P1_STRICT, TH89D_READ_P2_BYTE, TH89D_STRICT_MODE_0, 0x0C000000, 32); // 加严读0
+	// test_nvm_read(fd, TH89D_READ_P1_STRICT, TH89D_READ_P2_BYTE, TH89D_STRICT_MODE_1, 0x0C000000, 32); // 加严读1
+
+	// test_nvm_read(fd, TH89D_READ_P1_NORMAL, TH89D_READ_P2_BYTE, TH89D_STRICT_MODE_0, 0x0C000010, 32);
+	// test_nvm_read(fd, TH89D_READ_P1_NORMAL, TH89D_READ_P2_HALFWORD, TH89D_STRICT_MODE_0, 0x0C000010, 32);
+	// test_nvm_read(fd, TH89D_READ_P1_STRICT, TH89D_READ_P2_BYTE, TH89D_STRICT_MODE_0, 0x0C000010, 32); // 加严读0
+	// test_nvm_read(fd, TH89D_READ_P1_STRICT, TH89D_READ_P2_BYTE, TH89D_STRICT_MODE_1, 0x0C000010, 32); // 加严读1
 
 	close(fd);
 	printf("\n=== TH89D TEST DONE ===\n");
