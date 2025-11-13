@@ -15,6 +15,7 @@
 #define TH89D_IOCTL_NVM_ERASE		_IOWR(TH89D_IOCTL_MAGIC, 0x03, struct th89d_nvm_erase_args)
 #define TH89D_IOCTL_READ		_IOWR(TH89D_IOCTL_MAGIC, 0x04, struct th89d_read_args)
 #define TH89D_IOCTL_SM_OP		_IOWR(TH89D_IOCTL_MAGIC, 0x06, struct th89d_sm_args)
+#define TH89D_IOCTL_HASH_OP		_IOWR(TH89D_IOCTL_MAGIC, 0x08, struct th89d_hash_args)
 
 /* === 结构体定义 === */
 struct th89d_version_args {
@@ -59,6 +60,16 @@ struct th89d_sm_args {
 	uint8_t data_out[256];
 	uint32_t data_out_len;
 	uint16_t sw;
+};
+
+struct th89d_hash_args {
+	uint8_t algo;          // 算法类型（SM3/SHA1/SHA256）
+	uint8_t *data_in;      // 输入数据指针
+	uint32_t data_in_len;  // 输入数据长度
+	uint8_t *digest;       // 输出digest
+	uint32_t digest_len;   // 输出长度（32或20）
+	uint16_t block_size;   // 希望驱动分块大小（例如128/256）
+	uint16_t sw;           // 状态字
 };
 
 /* === 版本子命令（P2）定义 === */
@@ -393,6 +404,91 @@ static void test_sm_encrypt(int fd)
 	printf("\n=== [TEST 4] Done ===\n");
 }
 
+/* === 测试函数：HASH (SM3 / SHA1 / SHA256) === */
+static void test_hash_file(int fd, uint8_t algo, const char *filepath, uint16_t block_size)
+{
+	struct th89d_hash_args hash;
+	uint8_t *data = NULL;
+	uint8_t digest[512];
+	const char *algo_name;
+	FILE *fp = NULL;
+	long file_size = 0;
+	int ret = 0;
+
+	switch (algo) {
+	case 0x06: algo_name = "SM3";    break;
+	case 0x08: algo_name = "SHA1";   break;
+	case 0x0A: algo_name = "SHA256"; break;
+	default:   algo_name = "UNKNOWN"; break;
+	}
+
+	printf("\n=== [TEST 5] HASH (%s, IOCTL_HASH_OP) ===\n", algo_name);
+
+	/* === 打开文件 === */
+	fp = fopen(filepath, "rb");
+	if (!fp) {
+		perror("fopen");
+		return;
+	}
+
+	fseek(fp, 0, SEEK_END);
+	file_size = ftell(fp);
+	rewind(fp);
+
+	if (file_size <= 0) {
+		fprintf(stderr, "Error: empty file or cannot get size\n");
+		fclose(fp);
+		return;
+	}
+
+	data = malloc(file_size);
+	if (!data) {
+		perror("malloc");
+		fclose(fp);
+		return;
+	}
+
+	if (fread(data, 1, file_size, fp) != (size_t)file_size) {
+		perror("fread");
+		free(data);
+		fclose(fp);
+		return;
+	}
+	fclose(fp);
+
+	/* === 填充 HASH 参数结构体 === */
+	memset(&hash, 0, sizeof(hash));
+	memset(digest, 0, sizeof(digest));
+
+	hash.algo         = algo;           // 算法类型
+	hash.data_in      = data;           // 输入数据指针
+	hash.data_in_len  = file_size;      // 输入数据长度
+	hash.digest       = digest;         // 输出缓冲区
+	hash.digest_len   = sizeof(digest); // 输出缓冲区大小
+	hash.block_size   = block_size;     // 应用指定分块大小
+
+	printf("File: %s (%ld bytes), Block size = %u\n", filepath, file_size, block_size);
+
+	/* === 执行 IOCTL === */
+	ret = ioctl(fd, TH89D_IOCTL_HASH_OP, &hash);
+	if (ret < 0) {
+		perror("ioctl HASH_OP");
+		free(data);
+		return;
+	}
+
+	/* === 打印结果 === */
+	printf("[HASH_OP] SW=0x%04X (%s)\n", hash.sw, th89d_sw_str(hash.sw));
+	printf("Digest (%u bytes):\n", hash.digest_len);
+	for (uint32_t i = 0; i < hash.digest_len; i++) {
+		printf("%02X", hash.digest[i]);
+	}
+	printf("\n");
+
+	free(data);
+	printf("=== [TEST 5] HASH (%s) Done ===\n", algo_name);
+}
+
 /* === 主函数 === */
 int main(void)
 {
@@ -418,6 +514,45 @@ int main(void)
 	// test_nvm_read(fd, TH89D_READ_P1_STRICT, TH89D_READ_P2_BYTE, TH89D_STRICT_MODE_1, 0x0C000010, 32); // 加严读1
 
 	test_sm_encrypt(fd);
+
+	// test_hash_op(fd, 0x06); // SM3
+	// test_hash_op(fd, 0x08); // SHA1
+	// test_hash_op(fd, 0x0A); // SHA256
+
+
+	const char *testfile = "test.bin";
+	FILE *fp = fopen(testfile, "wb");
+	if (!fp) {
+		perror("fopen test.bin");
+		close(fd);
+		return 1;
+	}
+
+	unsigned char buf[8];
+	for (int i = 0; i < 8; i++)
+		buf[i] = (uint8_t)(i & 0xFF);   // 依次写入 0x00 ~ 0xFF 循环
+
+	if (fwrite(buf, 1, sizeof(buf), fp) != sizeof(buf)) {
+		perror("fwrite");
+		fclose(fp);
+		close(fd);
+		return 1;
+	}
+	fclose(fp);
+	printf("Wrote test file '%s' (%zu bytes)\n", testfile, sizeof(buf));
+
+	test_hash_file(fd, 0x06, "test.bin", 1);
+	test_hash_file(fd, 0x08, "test.bin", 1);
+	test_hash_file(fd, 0x0A, "test.bin", 1);
+
+	test_hash_file(fd, 0x06, "test.bin", 5);
+	test_hash_file(fd, 0x08, "test.bin", 5);
+	test_hash_file(fd, 0x0A, "test.bin", 5);
+
+	// test_hash_file(fd, 0x06, "test.bin", 6);  超过5字节就不准了
+	// test_hash_file(fd, 0x08, "test.bin", 6);
+	// test_hash_file(fd, 0x0A, "test.bin", 6);
+
 
 	close(fd);
 	printf("\n=== TH89D TEST DONE ===\n");
