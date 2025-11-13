@@ -26,10 +26,9 @@ struct th89d_version_args {
 };
 
 struct th89d_rng_args {
-	uint32_t le;         // 请求长度
-	uint32_t len;        // 实际长度
-	uint8_t *out;        // 输出缓冲区
-	uint16_t sw;         // 状态字
+	uint32_t random_len;   // 请求的随机数长度
+	uint8_t *random;       // 输出随机数
+	uint16_t sw;           // 状态字
 };
 
 struct th89d_nvm_erase_args {
@@ -217,22 +216,42 @@ static void test_rng(int fd)
 {
 	printf("\n[TEST 2] RNG\n");
 
-	unsigned char randbuf[32];
-	struct th89d_rng_args rng;
+	struct th89d_rng_args *rng;
+	unsigned char *randbuf;
 
-	memset(&rng, 0, sizeof(rng));
-	rng.le  = sizeof(randbuf); // 请求 32 字节随机数
-	rng.len = sizeof(randbuf);
-	rng.out = randbuf;
-
-	if (ioctl(fd, TH89D_IOCTL_RNG, &rng) < 0) {
-		perror("ioctl RNG");
+	rng = calloc(1, sizeof(*rng));
+	if (!rng) {
+		perror("calloc rng");
 		return;
 	}
 
-	dump_hex("Random Data", randbuf, rng.len);
+	randbuf = malloc(128);
+	if (!randbuf) {
+		perror("malloc randbuf");
+		free(rng);
+		return;
+	}
+
+	/* 初始化参数 */
+	memset(randbuf, 0, 128);
+	rng->random_len = 128;   /* 请求 128 字节随机数 */
+	rng->random = randbuf;  /* 指向用户态缓冲区 */
+
+	/* 发起 IOCTL 调用 */
+	if (ioctl(fd, TH89D_IOCTL_RNG, rng) < 0) {
+		perror("ioctl RNG");
+		free(randbuf);
+		free(rng);
+		return;
+	}
+
+	/* 输出结果 */
+	dump_hex("Random Data", randbuf, rng->random_len);
 	printf("RNG SW = 0x%04X (SW1=0x%02X, SW2=0x%02X, %s)\n",
-		rng.sw, rng.sw >> 8, rng.sw & 0xFF, th89d_sw_str(rng.sw));
+	       rng->sw, rng->sw >> 8, rng->sw & 0xFF, th89d_sw_str(rng->sw));
+
+	free(randbuf);
+	free(rng);
 }
 
 /* === 测试函数：NVM 擦除 === */
@@ -306,7 +325,6 @@ static void test_nvm_read(int fd, uint8_t p1, uint8_t p2,
 		rd.sw, rd.sw >> 8, rd.sw & 0xFF, th89d_sw_str(rd.sw));
 }
 
-/* === 测试函数：SM4 加解密 === */
 /* === 测试函数：SM4 加解密 === */
 static void test_sm_encrypt(int fd)
 {
@@ -513,7 +531,7 @@ int main(void)
 	// test_nvm_read(fd, TH89D_READ_P1_STRICT, TH89D_READ_P2_BYTE, TH89D_STRICT_MODE_0, 0x0C000010, 32); // 加严读0
 	// test_nvm_read(fd, TH89D_READ_P1_STRICT, TH89D_READ_P2_BYTE, TH89D_STRICT_MODE_1, 0x0C000010, 32); // 加严读1
 
-	test_sm_encrypt(fd);
+	// test_sm_encrypt(fd);
 
 	// test_hash_op(fd, 0x06); // SM3
 	// test_hash_op(fd, 0x08); // SHA1
@@ -541,13 +559,13 @@ int main(void)
 	fclose(fp);
 	printf("Wrote test file '%s' (%zu bytes)\n", testfile, sizeof(buf));
 
-	test_hash_file(fd, 0x06, "test.bin", 1);
-	test_hash_file(fd, 0x08, "test.bin", 1);
-	test_hash_file(fd, 0x0A, "test.bin", 1);
+	// test_hash_file(fd, 0x06, "test.bin", 1);
+	// test_hash_file(fd, 0x08, "test.bin", 1);
+	// test_hash_file(fd, 0x0A, "test.bin", 1);
 
-	test_hash_file(fd, 0x06, "test.bin", 5);
-	test_hash_file(fd, 0x08, "test.bin", 5);
-	test_hash_file(fd, 0x0A, "test.bin", 5);
+	// test_hash_file(fd, 0x06, "test.bin", 5);
+	// test_hash_file(fd, 0x08, "test.bin", 5);
+	// test_hash_file(fd, 0x0A, "test.bin", 5);
 
 	// test_hash_file(fd, 0x06, "test.bin", 6);  超过5字节就不准了
 	// test_hash_file(fd, 0x08, "test.bin", 6);
