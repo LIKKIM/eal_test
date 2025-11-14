@@ -21,24 +21,27 @@ struct th89d_nvm_erase_args {
 };
 
 struct th89d_read_args {
-	uint8_t p1;
-	uint8_t p2;
-	uint8_t mode;
-	uint32_t addr;
-	uint32_t read_len;
-	uint32_t data_len;
-	uint8_t *out;
-	uint16_t sw;
+	uint8_t  read_mode;      /* normal / strict / tolerant / status */
+	uint8_t  access_width;   /* byte / halfword / word */
+	uint8_t  strict_level;   /* 0 or 1, only valid when read_mode = STRICT */
+
+	uint32_t address;        /* start address */
+	uint32_t length;         /* number of bytes requested */
+
+	uint8_t *data;           /* user buffer */
+	uint32_t data_len;       /* actual returned length */
+
+	uint16_t sw;             /* status word */
 };
 
-static const char *mode_name_p1[] = {
+static const char *name_read_mode[] = {
 	"NORMAL",
 	"STRICT",
 	"TOLERANT",
 	"STATUS"
 };
 
-static const char *mode_name_p2[] = {
+static const char *name_access_width[] = {
 	"BYTE",
 	"HALFWORD",
 	"WORD"
@@ -46,7 +49,7 @@ static const char *mode_name_p2[] = {
 
 static void run_one_read(int fd,
 		uint32_t addr, uint32_t len,
-		uint8_t p1, uint8_t p2, uint8_t strict_mode)
+		uint8_t read_mode, uint8_t access_width, uint8_t strict_level)
 {
 	struct th89d_read_args rd;
 	uint8_t *buf = malloc(len);
@@ -57,15 +60,19 @@ static void run_one_read(int fd,
 	}
 
 	memset(&rd, 0, sizeof(rd));
-	rd.p1 = p1;
-	rd.p2 = p2;
-	rd.mode = strict_mode;
-	rd.addr = addr;
-	rd.read_len = len;
-	rd.out = buf;
 
-	printf("\n[%s %s strict=%u]\n",
-		mode_name_p1[p1], mode_name_p2[p2], strict_mode);
+	/* === 使用新结构体字段 === */
+	rd.read_mode    = read_mode;
+	rd.access_width = access_width;
+	rd.strict_level = strict_level;
+	rd.address      = addr;
+	rd.length       = len;
+	rd.data         = buf;
+
+	printf("\n[%s  %s  strict=%u]\n",
+		name_read_mode[read_mode],
+		name_access_width[access_width],
+		strict_level);
 
 	if (ioctl(fd, TH89D_IOCTL_READ, &rd) < 0) {
 		perror("ioctl READ");
