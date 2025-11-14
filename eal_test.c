@@ -19,10 +19,9 @@
 
 /* === 结构体定义 === */
 struct th89d_version_args {
-	uint8_t  p2;         // 对应 __u8
-	uint8_t *out;        // 用户空间缓冲区
-	uint32_t len;        // 缓冲区长度
-	uint16_t sw;         // 状态字
+	uint8_t  version_type;   /* 要获取的版本类型（原 p2） */
+	char *version;        /* 输出的版本号字符串缓冲区 */
+	uint16_t sw;             /* 状态字 */
 };
 
 struct th89d_rng_args {
@@ -188,26 +187,28 @@ static void test_get_version(int fd)
 {
 	printf("\n[TEST 1] GET_VERSION\n");
 
-	char buf[64];
-	struct th89d_version_args ver;
+	for (int type = TH89D_VER_CRYPTO1; type <= TH89D_VER_CLOCK_CTRL; type++) {
 
-	for (int p2 = TH89D_VER_CRYPTO1; p2 <= TH89D_VER_CLOCK_CTRL; p2++) {
+		char buf[16];
+		struct th89d_version_args ver;
+
 		memset(buf, 0, sizeof(buf));
 		memset(&ver, 0, sizeof(ver));
 
-		ver.p2  = p2;
-		ver.out = (unsigned char *)buf;
-		ver.len = sizeof(buf);
+		ver.version_type = type;
+		ver.version      = buf;   /* char* 正确匹配内核 */
 
 		if (ioctl(fd, TH89D_IOCTL_GET_VERSION, &ver) < 0) {
-			fprintf(stderr, "[%s] ioctl failed: %s\n",
-				th89d_ver_name[p2], strerror(errno));
-			continue;
+		fprintf(stderr, "[%s] ioctl failed: %s\n",
+			th89d_ver_name[type], strerror(errno));
+		continue;
 		}
 
-		printf("[%s] Version (P2=%02X): %s\n", th89d_ver_name[p2], p2, buf);
+		printf("[%s] Version (type=%02X): %s\n",
+		th89d_ver_name[type], type, buf);
+
 		printf("  SW = 0x%04X (SW1=0x%02X, SW2=0x%02X, %s)\n",
-			ver.sw, ver.sw >> 8, ver.sw & 0xFF, th89d_sw_str(ver.sw));
+		ver.sw, ver.sw >> 8, ver.sw & 0xFF, th89d_sw_str(ver.sw));
 	}
 }
 
