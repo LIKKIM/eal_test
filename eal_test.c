@@ -49,14 +49,18 @@ struct th89d_read_args {
 };
 
 struct th89d_sm_args {
-	uint8_t algo;     // P1: 01=SM1, 03=SSF33, 04=SM4
-	uint8_t mode;     // P2 bit4=1 CBC, bit0=1 decrypt
-	uint8_t key[16];  // 对称密钥
-	uint8_t iv[16];   // 仅 CBC 模式有效
-	uint8_t data_in[256];
-	uint32_t data_in_len;
-	uint8_t data_out[256];
-	uint32_t data_out_len;
+	uint8_t algo;        // P1: 01=SM1, 03=SSF33, 04=SM4
+	uint8_t mode;        // P2: bit4=CBC, bit0=decrypt
+
+	uint8_t *key;        // 16 字节密钥（用户分配）
+	uint8_t *iv;         // 16 字节向量（CBC 才使用）
+
+	uint8_t *plaintext;  // 输入数据（用户态分配）
+	uint32_t plaintext_len;
+
+	uint8_t *ciphertext; // 输出密文（用户态分配）
+	uint32_t ciphertext_len;
+
 	uint16_t sw;
 };
 
@@ -326,101 +330,105 @@ static void test_nvm_read(int fd, uint8_t p1, uint8_t p2,
 		rd.sw, rd.sw >> 8, rd.sw & 0xFF, th89d_sw_str(rd.sw));
 }
 
-/* === 测试函数：SM4 加解密 === */
+/* === 测试函数：SM4 加解密（动态，无 goto，TAB 缩进） === */
 static void test_sm_encrypt(int fd)
 {
-	struct th89d_sm_args sm = {0};
+	const uint8_t fixed_key[16] = {
+		0x01,0x23,0x45,0x67,0x89,0xAB,0xCD,0xEF,
+		0xFE,0xDC,0xBA,0x98,0x76,0x54,0x32,0x10
+	};
+
+	const uint8_t fixed_iv[16] = {
+		0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,
+		0x88,0x99,0xAA,0xBB,0xCC,0xDD,0xEE,0xFF
+	};
+
+	const uint8_t fixed_plain[16] = {
+		0x01,0x23,0x45,0x67,0x89,0xAB,0xCD,0xEF,
+		0xFE,0xDC,0xBA,0x98,0x76,0x54,0x32,0x10
+	};
+
 	uint8_t modes[] = {
 		TH89D_SM4_ECB_ENC,
 		TH89D_SM4_ECB_DEC,
 		TH89D_SM4_CBC_ENC,
 		TH89D_SM4_CBC_DEC,
 	};
-	uint8_t last_cipher[256] = {0};
-	uint32_t last_cipher_len = 0;
 
-	printf("\n=== [TEST 4] SM4 Encrypt/Decrypt ===\n");
+	uint8_t *saved_cipher = NULL;
+	uint32_t saved_cipher_len = 0;
+
+	printf("\n=== [TEST 4] SM4 Encrypt/Decrypt (Dynamic, No goto) ===\n");
 
 	for (int i = 0; i < 4; i++) {
+
+		struct th89d_sm_args sm;
 		memset(&sm, 0, sizeof(sm));
+
 		sm.algo = TH89D_ALGO_SM4;
 		sm.mode = modes[i];
 
-		/* === 测试密钥 === */
-		memcpy(sm.key, "\x01\x23\x45\x67\x89\xAB\xCD\xEF"
-		               "\xFE\xDC\xBA\x98\x76\x54\x32\x10", 16);
+		/* ---- 分配 key ---- */
+		sm.key = malloc(16);
+		memcpy(sm.key, fixed_key, 16);
 
-		/* === 输入数据设置 === */
-		if (sm.mode == TH89D_SM4_ECB_DEC || sm.mode == TH89D_SM4_CBC_DEC) {
-			/* 解密时使用上一次加密的输出 */
-			memcpy(sm.data_in, last_cipher, last_cipher_len);
-			sm.data_in_len = last_cipher_len;
-		} else {
-			/* 加密时使用固定明文 */
-			memcpy(sm.data_in, "\x01\x23\x45\x67\x89\xAB\xCD\xEF"
-		               "\xFE\xDC\xBA\x98\x76\x54\x32\x10", 16);
-			sm.data_in_len = 16;
-		}
-
-		/* CBC 模式才需要 IV */
+		/* ---- CBC 模式需要 IV ---- */
 		if (sm.mode & TH89D_MODE_CBC) {
-			memcpy(sm.iv, "\x00\x11\x22\x33\x44\x55\x66\x77"
-			              "\x88\x99\xAA\xBB\xCC\xDD\xEE\xFF", 16);
+			sm.iv = malloc(16);
+			memcpy(sm.iv, fixed_iv, 16);
+		} else {
+			sm.iv = NULL;
 		}
+
+		/* ---- 设置 plaintext ---- */
+		if (sm.mode == TH89D_SM4_ECB_DEC || sm.mode == TH89D_SM4_CBC_DEC) {
+			/* 解密：上一轮密文作为输入 */
+			sm.plaintext_len = saved_cipher_len;
+			sm.plaintext = malloc(saved_cipher_len);
+			memcpy(sm.plaintext, saved_cipher, saved_cipher_len);
+		} else {
+			/* 加密：固定明文 */
+			sm.plaintext_len = 16;
+			sm.plaintext = malloc(16);
+			memcpy(sm.plaintext, fixed_plain, 16);
+		}
+
+		/* ---- 分配输出 ciphertext ---- */
+		sm.ciphertext_len = 512;	/* 最大预留输出长度 */
+		sm.ciphertext = malloc(sm.ciphertext_len);
+		memset(sm.ciphertext, 0, sm.ciphertext_len);
 
 		printf("\n[TEST] %s\n", sm4_mode_name[modes[i]]);
+		dump_hex("key", sm.key, 16);
+		dump_hex("input", sm.plaintext, sm.plaintext_len);
 
-		/* === 打印密钥 === */
-		printf("Key (16 bytes):\n");
-		for (int j = 0; j < 16; j++) {
-			printf("%02X ", sm.key[j]);
-			if ((j + 1) % 16 == 0) printf("\n");
-		}
+		/* ---- 执行 SM 运算 ---- */
+		if (ioctl(fd, TH89D_IOCTL_SM_OP, &sm) < 0) {
+			perror("ioctl SM_OP");
+		} else {
+			printf("SW=0x%04X (%s)\n", sm.sw, th89d_sw_str(sm.sw));
 
-		/* === 打印 IV（仅 CBC 模式） === */
-		if (sm.mode & TH89D_MODE_CBC) {
-			printf("IV (16 bytes):\n");
-			for (int j = 0; j < 16; j++) {
-				printf("%02X ", sm.iv[j]);
-				if ((j + 1) % 16 == 0) printf("\n");
+			dump_hex("output", sm.ciphertext, sm.ciphertext_len);
+
+			/* 仅加密保存密文以便解密使用 */
+			if (sm.mode == TH89D_SM4_ECB_ENC || sm.mode == TH89D_SM4_CBC_ENC) {
+				saved_cipher = realloc(saved_cipher, sm.ciphertext_len);
+				memcpy(saved_cipher, sm.ciphertext, sm.ciphertext_len);
+				saved_cipher_len = sm.ciphertext_len;
 			}
 		}
 
-		/* === 打印输入数据 === */
-		printf("Input (%u bytes):\n", sm.data_in_len);
-		for (uint32_t j = 0; j < sm.data_in_len; j++) {
-			printf("%02X ", sm.data_in[j]);
-			if ((j + 1) % 16 == 0) printf("\n");
-		}
-		if (sm.data_in_len % 16)
-			printf("\n");
-
-		/* === 执行 SM4 运算 === */
-		if (ioctl(fd, TH89D_IOCTL_SM_OP, &sm) < 0) {
-			perror("ioctl SM_OP");
-			continue;
-		}
-
-		printf("SW=%04X (%s)\n", sm.sw, th89d_sw_str(sm.sw));
-
-		/* === 打印输出结果 === */
-		printf("Output (%u bytes):\n", sm.data_out_len);
-		for (uint32_t j = 0; j < sm.data_out_len; j++) {
-			printf("%02X ", sm.data_out[j]);
-			if ((j + 1) % 16 == 0)
-				printf("\n");
-		}
-		if (sm.data_out_len % 16)
-			printf("\n");
-
-		/* === 保存加密输出，用于后续解密 === */
-		if (sm.mode == TH89D_SM4_ECB_ENC || sm.mode == TH89D_SM4_CBC_ENC) {
-			memcpy(last_cipher, sm.data_out, sm.data_out_len);
-			last_cipher_len = sm.data_out_len;
-		}
+		/* ---- 内存释放 ---- */
+		free(sm.key);
+		if (sm.iv)
+			free(sm.iv);
+		free(sm.plaintext);
+		free(sm.ciphertext);
 	}
 
 	printf("\n=== [TEST 4] Done ===\n");
+
+	free(saved_cipher);
 }
 
 /* === 测试函数：HASH (SM3 / SHA1 / SHA256) === */
@@ -532,12 +540,7 @@ int main(void)
 	// test_nvm_read(fd, TH89D_READ_P1_STRICT, TH89D_READ_P2_BYTE, TH89D_STRICT_MODE_0, 0x0C000010, 32); // 加严读0
 	// test_nvm_read(fd, TH89D_READ_P1_STRICT, TH89D_READ_P2_BYTE, TH89D_STRICT_MODE_1, 0x0C000010, 32); // 加严读1
 
-	// test_sm_encrypt(fd);
-
-	// test_hash_op(fd, 0x06); // SM3
-	// test_hash_op(fd, 0x08); // SHA1
-	// test_hash_op(fd, 0x0A); // SHA256
-
+	test_sm_encrypt(fd);
 
 	const char *testfile = "test.bin";
 	FILE *fp = fopen(testfile, "wb");
