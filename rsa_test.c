@@ -47,7 +47,6 @@ struct th89d_rsa_data_input_args {
 	uint8_t  data_ctl;		/* 0: 数据已输入完成, 1: 数据未输入完成 */
 	uint8_t  input_data_type;
 	
-	uint32_t key_bits;		/* 密钥位数 */
 	uint32_t data_len;		/* 数据长度 */
 	uint8_t *data_in;		/* 输入数据 */
 	
@@ -61,7 +60,6 @@ struct th89d_rsa_operation_args {
 	uint8_t  cal_ctl;		/* 运算启动控制 */
 	uint8_t  input_data_type;
 	
-	uint32_t key_bits;		/* 密钥位数 */
 	uint8_t  output_len;		/* 期望输出长度 */
 	
 	uint32_t result_len;		/* 结果长度 */
@@ -107,7 +105,7 @@ static const uint8_t expected_ciphertext[] = {
 };
 
 static int rsa_data_input(int fd, uint8_t op_mode, uint8_t data_ctl, uint8_t input_data_type, 
-			  const uint8_t *data, uint32_t data_len, uint32_t key_bits)
+			  const uint8_t *data, uint32_t data_len)
 {
 	struct th89d_rsa_data_input_args args;
 	uint8_t *user_data = NULL;
@@ -118,7 +116,6 @@ static int rsa_data_input(int fd, uint8_t op_mode, uint8_t data_ctl, uint8_t inp
 	args.op_mode = op_mode;
 	args.data_ctl = data_ctl;
 	args.input_data_type = input_data_type;
-	args.key_bits = key_bits;
 	args.data_len = data_len;
 	
 	/* 分配用户空间数据缓冲区 */
@@ -140,7 +137,7 @@ static int rsa_data_input(int fd, uint8_t op_mode, uint8_t data_ctl, uint8_t inp
 }
 
 static int rsa_operation(int fd, uint8_t op_mode, uint8_t data_ctl, uint8_t cal_ctl, uint8_t input_data_type,
-			 uint32_t key_bits, uint8_t output_len,
+			 uint8_t output_len,
 			 uint8_t *result, uint32_t result_max)
 {
 	struct th89d_rsa_operation_args args;
@@ -153,7 +150,6 @@ static int rsa_operation(int fd, uint8_t op_mode, uint8_t data_ctl, uint8_t cal_
 	args.data_ctl = data_ctl;
 	args.cal_ctl = cal_ctl;
 	args.input_data_type = input_data_type;
-	args.key_bits = key_bits;
 	args.output_len = output_len;
 	args.result_len = result_max;
 	
@@ -184,7 +180,7 @@ static int rsa_operation(int fd, uint8_t op_mode, uint8_t data_ctl, uint8_t cal_
 	return (args.sw == 0x9000) ? (int)args.result_len : -1;
 }
 
-int main(void)
+int main(int argc, char *argv[])
 {
 	int fd = open("/dev/thd89", O_RDWR);
 	if (fd < 0) {
@@ -195,8 +191,7 @@ int main(void)
 	printf("=== RSA Test Program (Separate IOCTLs) ===\n");
 	printf("Testing 256-bit RSA encryption/decryption\n");
 	
-	const uint32_t key_bits = 256;
-	const uint32_t key_bytes = key_bits / 8;
+	uint32_t data_len = 32;
 	uint8_t ciphertext[32] = {0};
 	uint8_t decrypted[32] = {0};
 	
@@ -204,29 +199,31 @@ int main(void)
 	printf("\n>>> Encryption Flow (data_ctl=0x00):\n");
 	
 	/* 1. 输入明文M */
+
+	/* 明文是固定输入 */
 	if (rsa_data_input(fd, TH89D_RSA_MODE_ENC, TH89D_RSA_DATA_COMPLETE, TH89D_RSA_DATA_TYPE_ENC_DATA,
-			   plaintext_m, key_bytes, key_bits) < 0) {
+			   plaintext_m, data_len) < 0) {
 		printf("Failed to input plaintext M\n");
 		goto error;
 	}
 	
 	/* 2. 输入模数N */
 	if (rsa_data_input(fd, TH89D_RSA_MODE_ENC, TH89D_RSA_DATA_COMPLETE, TH89D_RSA_DATA_TYPE_N,
-			   rsa256_n, key_bytes, key_bits) < 0) {
+			   rsa256_n, data_len) < 0) {
 		printf("Failed to input modulus N\n");
 		goto error;
 	}
 	
 	/* 3. 输入公钥指数E */
 	if (rsa_data_input(fd, TH89D_RSA_MODE_ENC, TH89D_RSA_DATA_COMPLETE, TH89D_RSA_DATA_TYPE_E,
-			   rsa256_e, 4, key_bits) < 0) {
+			   rsa256_e, 4) < 0) {
 		printf("Failed to input public exponent E\n");
 		goto error;
 	}
 	
 	/* 4. 执行加密 */
 	int cipher_len = rsa_operation(fd, TH89D_RSA_MODE_ENC, TH89D_RSA_DATA_COMPLETE, TH89D_RSA_CAL_START, TH89D_RSA_DATA_TYPE_ENC_DATA,
-				       key_bits, key_bytes, ciphertext, sizeof(ciphertext));
+				       data_len, ciphertext, sizeof(ciphertext));
 	
 	if (cipher_len > 0) {
 		printf("Ciphertext (%d bytes):\n", cipher_len);
@@ -238,46 +235,47 @@ int main(void)
 	
 	/* 1. 输入密文C */
 	if (rsa_data_input(fd, TH89D_RSA_MODE_DEC, TH89D_RSA_DATA_COMPLETE, TH89D_RSA_DATA_TYPE_ENC_DATA,
-			   ciphertext, key_bytes, key_bits) < 0) {
+			   ciphertext, data_len) < 0) {
 		printf("Failed to input ciphertext C\n");
 		goto error;
 	}
 	
 	/* 2. 输入模数N */
 	if (rsa_data_input(fd, TH89D_RSA_MODE_DEC, TH89D_RSA_DATA_COMPLETE, TH89D_RSA_DATA_TYPE_N,
-			   rsa256_n, key_bytes, key_bits) < 0) {
+			   rsa256_n, data_len) < 0) {
 		printf("Failed to input modulus N\n");
 		goto error;
 	}
 	
 	/* 3. 输入私钥指数D */
 	if (rsa_data_input(fd, TH89D_RSA_MODE_DEC, TH89D_RSA_DATA_COMPLETE, TH89D_RSA_DATA_TYPE_D,
-			   rsa256_d, key_bytes, key_bits) < 0) {
+			   rsa256_d, data_len) < 0) {
 		printf("Failed to input private exponent D\n");
 		goto error;
 	}
 	
 	/* 4. 输入公钥指数E */
 	if (rsa_data_input(fd, TH89D_RSA_MODE_DEC, TH89D_RSA_DATA_COMPLETE, TH89D_RSA_DATA_TYPE_E,
-			   rsa256_e, 4, key_bits) < 0) {
+			   rsa256_e, 4) < 0) {
 		printf("Failed to input public exponent E\n");
 		goto error;
 	}
 	
 	/* 5. 执行解密 */
 	int plain_len = rsa_operation(fd, TH89D_RSA_MODE_DEC, TH89D_RSA_DATA_COMPLETE, TH89D_RSA_CAL_START, TH89D_RSA_DATA_TYPE_ENC_DATA,
-				      key_bits, key_bytes, decrypted, sizeof(decrypted));
+				      data_len, decrypted, sizeof(decrypted));
 	
 	if (plain_len > 0) {
 		printf("Decrypted plaintext (%d bytes):\n", plain_len);
 		dump_hex(decrypted, plain_len);
 		
 		/* 验证明文 */
-		if (memcmp(decrypted, plaintext_m, key_bytes) == 0) {
+		if (memcmp(decrypted, plaintext_m, data_len) == 0) {
 			printf("[SUCCESS] Plaintext matches original message!\n");
 		} else {
 			printf("[FAILED] Plaintext does NOT match original message!\n");
 		}
+
 	}
 	
 	close(fd);
