@@ -180,6 +180,43 @@ static int rsa_operation(int fd, uint8_t op_mode, uint8_t data_ctl, uint8_t cal_
 	return (args.sw == 0x9000) ? (int)args.result_len : -1;
 }
 
+/* 文件读取函数 */
+static int read_input_file(const char *filename, uint8_t **buffer, uint32_t *length)
+{
+	FILE *file = fopen(filename, "rb");
+	if (!file) {
+		perror("fopen");
+		return -1;
+	}
+	
+	fseek(file, 0, SEEK_END);
+	*length = ftell(file);
+	fseek(file, 0, SEEK_SET);
+
+	if (*length != 32) {
+		printf("Error: File must be exactly 32 bytes, got %u bytes\n", *length);
+		fclose(file);
+		return -1;
+	}
+
+	*buffer = malloc(*length);
+	if (!*buffer) {
+		perror("malloc");
+		fclose(file);
+		return -1;
+	}
+
+	if (fread(*buffer, 1, *length, file) != *length) {
+		perror("fread");
+		free(*buffer);
+		fclose(file);
+		return -1;
+	}
+
+	fclose(file);
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	int fd = open("/dev/thd89", O_RDWR);
@@ -187,26 +224,47 @@ int main(int argc, char *argv[])
 		perror("open /dev/thd89");
 		return 1;
 	}
+
+	if (argc != 2) {
+		printf("Usage: %s <32-byte-file>\n", argv[0]);
+		close(fd);
+		return 1;
+	}
 	
 	printf("=== RSA Test Program (Separate IOCTLs) ===\n");
 	printf("Testing 256-bit RSA encryption/decryption\n");
 	
-	uint32_t data_len = 32;
 	uint8_t ciphertext[32] = {0};
 	uint8_t decrypted[32] = {0};
-	
+
+	/* 读取文件 */
+	uint8_t *plaintext = NULL;
+	uint32_t data_len = 0;
+
+	if (read_input_file(argv[1], &plaintext, &data_len) < 0) {
+		close(fd);
+		return 1;
+	}
+
 	/* ========== 加密流程 ========== */
 	printf("\n>>> Encryption Flow (data_ctl=0x00):\n");
-	
+
 	/* 1. 输入明文M */
 
 	/* 明文是固定输入 */
+	// if (rsa_data_input(fd, TH89D_RSA_MODE_ENC, TH89D_RSA_DATA_COMPLETE, TH89D_RSA_DATA_TYPE_ENC_DATA,
+	// 		   plaintext_m, data_len) < 0) {
+	// 	printf("Failed to input plaintext M\n");
+	// 	goto error;
+	// }
+
+	/* 1. 输入明文M（从文件读取） */
 	if (rsa_data_input(fd, TH89D_RSA_MODE_ENC, TH89D_RSA_DATA_COMPLETE, TH89D_RSA_DATA_TYPE_ENC_DATA,
-			   plaintext_m, data_len) < 0) {
+			   plaintext, data_len) < 0) {
 		printf("Failed to input plaintext M\n");
 		goto error;
 	}
-	
+
 	/* 2. 输入模数N */
 	if (rsa_data_input(fd, TH89D_RSA_MODE_ENC, TH89D_RSA_DATA_COMPLETE, TH89D_RSA_DATA_TYPE_N,
 			   rsa256_n, data_len) < 0) {
@@ -269,13 +327,23 @@ int main(int argc, char *argv[])
 		printf("Decrypted plaintext (%d bytes):\n", plain_len);
 		dump_hex(decrypted, plain_len);
 		
-		/* 验证明文 */
-		if (memcmp(decrypted, plaintext_m, data_len) == 0) {
-			printf("[SUCCESS] Plaintext matches original message!\n");
-		} else {
-			printf("[FAILED] Plaintext does NOT match original message!\n");
-		}
+		// /* 验证明文 */
+		// if (memcmp(decrypted, plaintext_m, data_len) == 0) {
+		// 	printf("[SUCCESS] Plaintext matches original message!\n");
+		// } else {
+		// 	printf("[FAILED] Plaintext does NOT match original message!\n");
+		// }
 
+		/* 与原始文件比较 */
+		if (memcmp(decrypted, plaintext, data_len) == 0) {
+			printf("[SUCCESS] Decrypted text matches original file!\n");
+		} else {
+			printf("[FAILED] Decrypted text does NOT match original file!\n");
+			printf("Original:\n");
+			dump_hex(plaintext, data_len);
+			printf("Decrypted:\n");
+			dump_hex(decrypted, plain_len);
+		}
 	}
 	
 	close(fd);
